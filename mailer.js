@@ -9,13 +9,18 @@ const transporter = nodemailer.createTransport({
     },
 });
 
-const sendBookingEmail = async (userEmail, userName, eventTitle, bookingTime) => {
+const sendBookingEmail = async (userEmail, userName, eventTitle, bookingTime, eventLocation, bookingDetails) => {
     try {
+        // Prepare booking details for email
+        const bookingDetailsList = bookingDetails.map(detail => 
+            `Event: ${detail.eventTitle}\nSeats: ${detail.seats}\nPrice: ${detail.price}\n`
+        ).join('\n');
+
         await transporter.sendMail({
             from: process.env.EMAIL_USER, // Sender address
             to: userEmail, // Recipient address
             subject: 'Event Booking Confirmation', // Subject line
-            text: `Dear ${userName},\n\nYou have successfully booked the event: ${eventTitle} on ${bookingTime}.\n\nThank you for booking with us!`, // Plain text body
+            text: `Dear ${userName},\n\nYou have successfully booked the following events:\n\n${bookingDetailsList}\n\nBooking Time: ${bookingTime}\nLocation: ${eventLocation}\n\nThank you for booking with us!`, // Plain text body
         });
     } catch (error) {
         console.error('Error sending email:', error);

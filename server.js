@@ -7,8 +7,15 @@ const User = require('./models/User');
 const Event = require('./models/Event');
 const Booking = require('./models/Booking');
 const { sendBookingEmail,sendRegistrationEmail } = require('./mailer');
+const Razorpay = require('razorpay'); // Import Razorpay package
+const crypto = require('crypto');
+const Cart = require('./models/cart');
 
 
+const razorpay = new Razorpay({
+    key_id: 'rzp_test_KHvP6Cq8SdiBUB',
+    key_secret: 'GjAQjaaOyKwhhfaTvgZga1Bp',
+});
 
 
 const cors = require('cors');
@@ -81,7 +88,7 @@ app.post('/login', async (req, res) => {
         }
 
         const token = jwt.sign({ userId: user._id, role: user.role }, secret, { expiresIn: '1h' });
-        res.json({ token, role: user.role }); // Ensure role is included in response
+        res.json({ token, role: user.role,name:user.name,userId:user._id }); // Ensure role is included in response
     } catch (error) {
         console.error('Error logging in:', error); // Log the error for debugging
         res.status(400).send('Error logging in');
@@ -254,101 +261,157 @@ app.delete('/events/:id', auth, async (req, res) => {
 
 
 
+
+// Booking initiation route
 app.post('/bookings', auth, async (req, res) => {
-    const { eventId } = req.body;
+    const { bookingDetails, amount } = req.body;
     const userId = req.user._id;
 
-    try {
-        // Ensure the event exists
-        const event = await Event.findById(eventId);
-        if (!event) {
-            return res.status(404).json({ message: 'Event not found' });
-        }
+    // Log the incoming request body to debug
+    console.log(req.body);
 
-        // Create a booking
-        const booking = new Booking({ event: eventId, user: userId });
+    // Validate that bookingDetails is present and is an array
+    if (!bookingDetails || !Array.isArray(bookingDetails) || bookingDetails.length === 0) {
+        return res.status(400).json({ message: 'Booking details are required and must be an array' });
+    }
+
+    try {
+        // Create a payment order with Razorpay
+        const order = await razorpay.orders.create({
+            amount: amount * 100, // Amount in paise
+            currency: 'INR',
+            receipt: `receipt_${userId}_${Date.now()}`.substring(0, 40), // Limit to 40 characters
+        });
+
+        // Create a booking entry in the database
+        const booking = new Booking({
+            userId,
+            amount,
+            paymentMethod: 'Razorpay',
+            bookingDetails: bookingDetails.map(detail => ({
+                eventId: detail.eventId,
+                eventName: detail.eventName,
+                price: detail.price,
+                time: detail.time,
+                status: 'pending'
+            })),
+            paymentOrderId: order.id,
+        });
         await booking.save();
 
-        // Populate the user and event details
-        const populatedBooking = await Booking.findById(booking._id)
-            .populate('user', 'name email')
-            .populate('event', 'title')
-            .exec();
-
-        // Extract user and event details
-        const { name: userName, email: userEmail } = populatedBooking.user;
-        const { title: eventTitle } = populatedBooking.event;
-        const bookingTime = new Date().toLocaleString('en-US', {
-            weekday: 'long',
-            year: 'numeric',
-            month: 'long',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: 'numeric',
-            second: 'numeric',
-            hour12: true,
-        });
-
-        // Send booking confirmation email
-        await sendBookingEmail(userEmail, userName, eventTitle, bookingTime);
-
-        // Respond with the booking details
+        // Respond with the order ID and payment details
         res.status(201).json({
-            message: 'Booking successful',
-            booking: {
-                id: populatedBooking._id,
-                eventTitle: populatedBooking.event.title,
-                username: populatedBooking.user.name,
-                email: populatedBooking.user.email,
-                bookingTime: bookingTime
-            }
+            message: 'Booking initiated',
+            orderId: order.id,
+            amount: order.amount / 100, // Convert amount back to rupees
+            currency: order.currency,
+            receipt: order.receipt,
         });
+
     } catch (error) {
-        console.error('Error booking event:', error);
-        res.status(500).json({ message: 'Error booking event', error });
+        console.error('Error initiating booking:', error);
+        res.status(500).json({ message: 'Error initiating booking', error });
     }
 });
 
+// Payment verification route
+app.post('/verify-payment', auth, async (req, res) => {
+    const { orderId, paymentId, signature } = req.body;
 
+    try {
+        const generatedSignature = crypto.createHmac('sha256', 'GjAQjaaOyKwhhfaTvgZga1Bp')
+            .update(orderId + '|' + paymentId)
+            .digest('hex');
 
-// Example for fetching bookings
+        const isSignatureValid = generatedSignature === signature;
+
+        if (!isSignatureValid) {
+            return res.status(400).json({ message: 'Invalid payment signature' });
+        }
+
+        // Update the booking status to confirmed
+        const booking = await Booking.findOneAndUpdate(
+            { paymentOrderId: orderId },
+            { paymentId, paymentStatus: 'confirmed', 'bookingDetails.$[].status': 'confirmed' },
+            { new: true }
+        );
+
+        if (!booking) {
+            return res.status(404).json({ message: 'Booking not found' });
+        }
+
+        // Fetch user and event details for email confirmation
+        const user = await User.findById(booking.userId);
+        const eventIds = booking.bookingDetails.map(detail => detail.eventId);
+        const events = await Event.find({ _id: { $in: eventIds } });
+
+        const eventLocation = events.map(event => event.location).join(', ');
+
+        // Send a confirmation email with details
+        await sendBookingEmail(
+            user.email,
+            user.name,
+            booking.bookingTitle,
+            new Date().toLocaleString(),
+            eventLocation,
+            booking.bookingDetails
+        );
+
+        res.status(200).json({ message: 'Payment verified and booking confirmed', booking });
+
+    } catch (error) {
+        console.error('Error verifying payment:', error);
+        res.status(500).json({ message: 'Error verifying payment', error });
+    }
+});
+
 app.get('/bookings', auth, async (req, res) => {
     try {
         const userId = req.user._id;
-        const userRole = req.user.role;
+        const userRole = req.user.role; // Assume that the role is part of the user's JWT payload
 
         let bookings;
 
         if (userRole === 'admin') {
+            // Admin: Fetch all bookings
             bookings = await Booking.find()
-                .populate('event', 'title')
-                .populate('user', 'name email');
+                .populate('userId', 'name email')
+                .populate('bookingDetails.eventId', 'title');
         } else if (userRole === 'organizer') {
-            bookings = await Booking.find()
-                .populate({
-                    path: 'event',
-                    match: { organizer: userId }, // Filter events to those organized by the logged-in user
-                    select: 'title'
-                })
-                .populate('user', 'name email');
-            // Filter out bookings where the event does not match the organizer
-            bookings = bookings.filter(booking => booking.event);
+            // Organizer: Fetch only bookings for events they created
+            const events = await Event.find({ organizerId: userId }).select('_id');
+            const eventIds = events.map(event => event._id);
+
+            bookings = await Booking.find({
+                'bookingDetails.eventId': { $in: eventIds }
+            })
+                .populate('userId', 'name email')
+                .populate('bookingDetails.eventId', 'title');
         } else if (userRole === 'user') {
-            bookings = await Booking.find({ user: userId })
-                .populate('event', 'title')
-                .populate('user', 'name email');
+            // User: Fetch only their bookings
+            bookings = await Booking.find({ userId })
+                .populate('userId', 'name email')
+                .populate('bookingDetails.eventId', 'title');
         } else {
-            return res.status(403).json({ message: 'Forbidden' });
+            return res.status(403).json({ message: 'Access denied' });
         }
 
-        res.json(bookings);
+        // Format the bookings data
+        const formattedBookings = bookings.map(booking => ({
+            bookingId: booking._id,
+            userName: booking.userId.name,
+            email: booking.userId.email,
+            bookingTitle: booking.bookingDetails.map(detail => detail.eventId.title).join(', '),
+            price: booking.amount,
+            status: booking.paymentStatus,
+        }));
+
+        res.status(200).json({ bookings: formattedBookings });
     } catch (error) {
-        console.error('Error fetching bookings:', error.message);
-        res.status(500).json({ message: 'Error fetching bookings', error: error.message });
+        console.error('Error fetching bookings:', error);
+        res.status(500).json({ message: 'Error fetching bookings', error });
     }
 });
-
-
 
 
 

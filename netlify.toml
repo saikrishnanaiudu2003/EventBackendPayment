@@ -1,0 +1,16 @@
+[build]
+  # Directory containing the production-ready files
+  publish = "dist" 
+  # Directory containing the serverless functions
+  functions = "netlify/functions" 
+
+[dev]
+  # Port to use for Netlify Dev
+  port = 8888
+
+[functions]
+  # Set the directory where your serverless functions are located
+  directory = "netlify/functions"
+
+  # Set node version
+  node_bundler = "esbuild"

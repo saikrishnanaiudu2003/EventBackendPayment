@@ -1,34 +1,59 @@
 const mongoose = require('mongoose');
 
 const bookingSchema = new mongoose.Schema({
-    event: {
-        type: mongoose.Schema.Types.ObjectId,
-        ref: 'Event',
-        required: true
-    },
-    user: {
+    userId: {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User',
         required: true
     },
-    bookingTime: {
+    bookingDetails: [
+        {
+            eventId: {
+                type: mongoose.Schema.Types.ObjectId,
+                ref: 'Event',
+                required: true
+            },
+            eventName: {
+                type: String,
+                required: true
+            },
+            price: {
+                type: Number,
+                required: true
+            },
+            time: {
+                type: String,
+                required: true
+            },
+            status: {
+                type: String,
+                default: 'pending'
+            }
+        }
+    ],
+    amount: {
+        type: Number,
+        required: true
+    },
+    paymentMethod: {
+        type: String,
+        required: true
+    },
+    paymentOrderId: {
+        type: String,
+        required: true
+    },
+    paymentId: {
+        type: String
+    },
+    paymentStatus: {
+        type: String,
+        default: 'pending'
+    },
+    createdAt: {
         type: Date,
-        default: Date.now // Automatically sets the booking time to the current date and time
+        default: Date.now
     }
-});
-
-// Virtual field to get the user's name and email
-bookingSchema.virtual('username').get(function() {
-    return this.user ? this.user.name : '';
-});
-
-bookingSchema.virtual('email').get(function() {
-    return this.user ? this.user.email : '';
-});
-
-// Virtual field to get the event's title
-bookingSchema.virtual('eventTitle').get(function() {
-    return this.event ? this.event.title : '';
 });
 
 const Booking = mongoose.model('Booking', bookingSchema);
